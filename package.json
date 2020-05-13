@@ -1,0 +1,11 @@
+{
+    "name": "Welcome Screen",
+    "author": "Florian Wesch <fw@info-beamer.com>",
+    "desc": "info-beamer hosted OS welcome screen",
+    "repository": "https://github.com/info-beamer/package-welcome-screen",
+    "platforms": ["pi/v6", "pi/v7", "pi/v8"],
+    "nesting": {
+        "parents": ["top-level"],
+        "childs": []
+    }
+}

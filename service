@@ -1,0 +1,235 @@
+#!/usr/bin/python
+# 
+# Copyright (c) 2014-2020 Florian Wesch <fw@info-beamer.com>
+# All rights reserved. No warranty, explicit or implicit, provided.
+#
+import socket
+import os
+import sys
+import time
+import json
+import threading
+import requests
+import platform
+import calendar
+import fcntl
+import struct
+from datetime import datetime
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def log(msg):
+    print >>sys.stderr, msg
+
+def readfile(filename):
+    with open(filename, "rb") as f:
+        return f.read()
+
+DUMMY_MODE = not os.path.exists("UUID")
+
+if DUMMY_MODE:
+    UUID = None
+    NET_DEV = 'eth0'
+    VERSION = '20200202-123456'
+    TAG = 'stable-0011'
+    CHANNEL = 'stable'
+else:
+    UUID = readfile("UUID")
+    NET_DEV = os.environ['NET_DEV']
+    VERSION = os.environ['VERSION']
+    TAG = os.environ['TAG']
+    CHANNEL = os.environ['CHANNEL']
+
+SERIAL = os.environ['SERIAL']
+CONTROL_HOST = os.environ['CONTROL_HOST']
+IB_SYNC_HOST = os.environ['IB_SYNC_HOST']
+
+def send_ib(data):
+    sock.sendto(data, ('127.0.0.1', 4444))
+
+branding_settings = {
+    "register-url": "https://info-beamer.com/register",
+}
+
+try:
+    for k, v in json.loads(readfile("branding.json")).iteritems():
+        branding_settings[k] = v
+except:
+    pass
+
+try:
+    DEVICE_CONNECT_KEY = readfile("device-connect-key.txt")
+except:
+    DEVICE_CONNECT_KEY = None
+
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,  # SIOCGIFADDR
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+
+def get_mac(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        info = fcntl.ioctl(
+            s.fileno(),
+            0x8927, # SIOCGIFHWADDR
+            struct.pack('256s', ifname[:15])
+        )[18:24]
+        return ':'.join('%02x' % ord(char) for char in info)
+    except:
+        return None
+    finally:
+        s.close()
+
+class TestThread(threading.Thread):
+    def __init__(self, state, retry=10):
+        super(TestThread, self).__init__()
+        self.daemon = True
+        self.retry = retry
+        self.state = state
+
+    def run(self):
+        while 1:
+            try:
+                self.test()
+            except:
+                log("%s failed. retrying again" % self.state)
+                time.sleep(self.retry)
+            else:
+                break
+        while 1:
+            send_ib('root/sys/state/%s:true' % self.state)
+            time.sleep(1)
+
+class TestTime(TestThread):
+    def test(self):
+
+        local_time = time.time()
+
+        if local_time < 1000000:
+            raise ValueError("no time yet")
+
+        ping = requests.head("http://ping.infobeamer.com/ping", timeout=10, headers={
+            'User-Agent': 'info-beamer hello/time-test',
+        })
+        dt = datetime.strptime(ping.headers['date'], '%a, %d %b %Y %H:%M:%S GMT')
+        http_time = calendar.timegm(dt.utctimetuple())
+
+        if abs(http_time - local_time) > 10:
+            raise ValueError("wrong time")
+
+class TestDNS(TestThread):
+    def test(self):
+        socket.gethostbyname("ping.infobeamer.com")
+
+class TestSync(TestThread):
+    def test(self):
+        r = requests.get("https://%s/ping" % IB_SYNC_HOST, timeout=5, headers={
+            'User-Agent': 'info-beamer hello/sync-check'
+        })
+        r.raise_for_status()
+        if r.content != 'pong':
+            raise ValueError("pong expected")
+
+class NetworkThread(threading.Thread):
+    def __init__(self):
+        super(NetworkThread, self).__init__()
+        self.daemon = True
+        self.captive_portal = None
+
+    def detect_captive_portal(self):
+        try:
+            r = requests.get("http://ping.infobeamer.com/ping", timeout=5, headers={
+                'User-Agent': 'info-beamer hello/captive-portal-check',
+            })
+            return r.status_code != 200 or r.content != 'pong'
+        except:
+            time.sleep(9)
+            return None
+
+    def run(self):
+        while 1:
+            net_dev_name = {
+                'wlan0': 'WiFi',
+                'eth0': 'Ethernet',
+            }[NET_DEV]
+
+            try:
+                ip = get_ip_address(NET_DEV)
+                if self.captive_portal is None:
+                    self.captive_portal = self.detect_captive_portal()
+                log("captive portal status is %r" % (self.captive_portal,))
+            except:
+                ip = '<no ip>'
+
+            if self.captive_portal:
+                info = "Captive portal detected. See info-beamer.com/lnk/portal (%s)" % net_dev_name
+            else:
+                mac = get_mac(NET_DEV)
+                info = '%s (%s, %s)' % (ip, net_dev_name, mac)
+
+            send_ib('root/sys/network/info:%s' % info)
+            time.sleep(1)
+
+def poll_master():
+    try:
+        if DUMMY_MODE:
+            return True, '12345678'
+
+        url = "https://%s/api/v1/device/connect/%s/%s" % (CONTROL_HOST, SERIAL, UUID)
+        if DEVICE_CONNECT_KEY:
+            url += "/" + DEVICE_CONNECT_KEY
+
+        resp = requests.get(url, headers = {
+            'User-Agent': 'info-beamer hello/connect (%s, %s, %s, %s)' % (
+                VERSION, TAG, CHANNEL, platform.machine()
+            ),
+            'X-features': 'sync-file-v2',
+        })
+
+        if resp.status_code != 200:
+            return False, None
+        info = resp.json()
+        if info['connected']:
+            return True, None
+        else:
+            return True, info['pin']
+    except Exception:
+        return False, None
+
+if __name__ == "__main__":
+    pin = None
+
+    TestTime("time", 10).start()
+    TestDNS("dns", 5).start()
+    TestSync("sync", 15).start()
+    NetworkThread().start()
+
+    while 1:
+        while 1:
+            send_ib('root/sys/connect/info:Contacting backend')
+            success, pin = poll_master()
+            if success:
+                break
+
+            time.sleep(2)
+            send_ib('root/sys/connect/info:Could not connect to backend')
+            time.sleep(3)
+            for i in range(25):
+                send_ib('root/sys/connect/info:Retrying in %d' % (25- i))
+                time.sleep(1)
+
+        if pin:
+            send_ib('root/sys/connect/info:Register this device at %s' % branding_settings['register-url'])
+            send_ib('root/sys/connect/pin:%s' % pin)
+            time.sleep(5)
+        else:
+            send_ib('root/sys/connect/pin:')
+
+            # renew pin after 5 minutes
+            for i in range(60):
+                send_ib('root/sys/connect/info:Connected. Loading content')
+                time.sleep(5)

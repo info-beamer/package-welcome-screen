@@ -1,0 +1,7 @@
+{
+    "name": "Welcome Screen",
+    "permissions": {
+        "network": "Needs network access"
+    },
+    "options": []
+}
