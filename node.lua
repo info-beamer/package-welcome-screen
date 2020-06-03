@@ -27,8 +27,8 @@ local logo = resource.load_image{
 local branding_settings = {
     ["register-url"] = "https://info-beamer.com/register",
     ["acknowledge-info-beamer"] = true,
-    ["branding-action-centered"] = true,
-    ["branding-state-centered"] = true,
+    ["branding-action-centered"] = false,
+    ["branding-state-centered"] = false,
     ["branding-wifi-template"] = 'Configuration WiFi %s active',
 }
 util.json_watch("branding.json", function(settings)
@@ -337,18 +337,20 @@ local function branded_main()
     end
 
     local y = HEIGHT-18
+    local size = 18
     if branding_settings['branding-action-centered'] then
-        y = HEIGHT / 2 - 9
+        y = HEIGHT / 2 - 20
+        size = 26
     end
 
     if wifi_name ~= "" then
         centered(font, y, string.format(
             branding_settings['branding-wifi-template'], wifi_name
-        ), 16, 1,1,1,blend2)
+        ), size, 1,1,1,blend2)
     elseif connect_pin ~= "" then
-        centered(font, y, "Connect using PIN " .. connect_pin, 16, 1,1,1,blend2)
+        centered(font, y, "Connect using PIN " .. connect_pin, size, 1,1,1,blend2)
     else
-        centered(font, y, "Waiting for content", 16, 1,1,1,blend2, true)
+        centered(font, y, "Waiting for content", size, 1,1,1,blend2, true)
     end
 
     if connect_pin ~= "" then
@@ -361,7 +363,7 @@ local function branded_main()
 
     if state_in > 0 then
         if branding_settings['branding-state-centered'] then
-            states.draw(WIDTH/2+50, HEIGHT/2+40, 20, state_in)
+            states.draw(WIDTH/2+72, HEIGHT/2+50, 30, state_in)
         else
             states.draw(WIDTH-3, HEIGHT, 20, state_in)
         end
