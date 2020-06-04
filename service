@@ -15,6 +15,9 @@ import calendar
 import fcntl
 import struct
 from datetime import datetime
+from hosted import config, node, device
+
+config.restart_on_update()
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -24,6 +27,8 @@ def log(msg):
 def readfile(filename):
     with open(filename, "rb") as f:
         return f.read()
+
+lua = node.rpc()
 
 DUMMY_MODE = not os.path.exists("UUID")
 
@@ -46,6 +51,35 @@ IB_SYNC_HOST = os.environ['IB_SYNC_HOST']
 
 def send_ib(data):
     sock.sendto(data, ('127.0.0.1', 4444))
+
+@lua.call
+def update_device_status():
+    lua.device_status(device.syncer_api.get('/api/v1/status'))
+
+@lua.call
+def update_device_sensor():
+    lua.device_sensor(device.syncer_api.get('/api/v1/sensor'))
+
+@lua.call
+def os_reboot():
+    device.syncer_api.post('/api/v1/os/reboot')
+
+@lua.call
+def os_update():
+    device.syncer_api.post('/api/v1/os/update')
+
+@lua.call
+def wifi_start():
+    lua.wifi_config_status(device.syncer_api.post('/api/v1/wifi/start'))
+
+@lua.call
+def wifi_stop():
+    lua.wifi_config_status(device.syncer_api.post('/api/v1/wifi/stop'))
+
+@lua.call
+def wifi_status():
+    lua.wifi_config_status(device.syncer_api.post('/api/v1/wifi/status'))
+
 
 branding_settings = {
     "register-url": "https://info-beamer.com/register",
@@ -177,7 +211,7 @@ class NetworkThread(threading.Thread):
 def poll_master():
     try:
         if DUMMY_MODE:
-            return True, '12345678'
+            return True, '1234ABCD'
 
         url = "https://%s/api/v1/device/connect/%s/%s" % (CONTROL_HOST, SERIAL, UUID)
         if DEVICE_CONNECT_KEY:
